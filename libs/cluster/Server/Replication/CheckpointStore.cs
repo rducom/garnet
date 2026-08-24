@@ -181,13 +181,20 @@ namespace Garnet.cluster
                     break;
                 clusterProvider.ReplicationLogCheckpointManager.DeleteLogCheckpoint(curr.metadata.storeHlogToken);
 
-                if (!CanDeleteToken(curr, CheckpointFileType.STORE_INDEX))
-                    break;
-                clusterProvider.ReplicationLogCheckpointManager.DeleteIndexCheckpoint(curr.metadata.storeIndexToken);
+                // The index token may be shared with newer entries — incremental checkpoints
+                // inherit it (AddCheckpointEntry with fullCheckpoint: false) — in which case the
+                // index files must survive. But this entry's log checkpoint is already deleted, so
+                // the entry itself is dead either way: unlink it and keep walking. Breaking here
+                // (the previous behavior) retained a half-deleted entry at the head, and the hlog
+                // truncation below then tried to read the very metadata file deleted two lines
+                // above — ArgumentNullException on every incremental cleanup, so the hlog and AOF
+                // were never truncated and disk grew without bound.
+                if (CanDeleteToken(curr, CheckpointFileType.STORE_INDEX))
+                    clusterProvider.ReplicationLogCheckpointManager.DeleteIndexCheckpoint(curr.metadata.storeIndexToken);
 
                 logger?.LogCheckpointEntry(LogLevel.Warning, "Deleting outdated checkpoint", curr);
 
-                // At least one token can always be deleted thus invalidating the in-memory entry
+                // The log checkpoint token can always be deleted at this point, invalidating the in-memory entry
                 var next = curr.next;
                 curr.next = null;
                 curr = next;
